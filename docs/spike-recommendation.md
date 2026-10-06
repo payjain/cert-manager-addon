@@ -10,7 +10,7 @@
 
 ## 1. Executive Summary
 
-The OCM AddOnTemplate framework is a viable and recommended approach for delivering cert-manager as a native ACM managed-cluster add-on. A proof-of-concept implementation in `stolostron/cert-manager-addon` ([PR #1](https://github.com/stolostron/cert-manager-addon/pull/1)) demonstrates end-to-end deployment of `openshift-cert-manager-operator` via OLM Subscription, with health gated on actual operator resolution (not just ManifestWork application). The OLM-only pattern (no agent Deployment, no custom Go code) minimizes maintenance burden and aligns with existing ACM add-on precedent (e.g., pipelines-operator). We recommend proceeding with implementation, scoped to four stories detailed in Section 10.
+The OCM AddOnTemplate framework is a viable and recommended approach for delivering cert-manager as a native ACM managed-cluster add-on. The proof-of-concept implementation in `stolostron/cert-manager-addon` ([PR #1](https://github.com/stolostron/cert-manager-addon/pull/1)) defines deployment of `openshift-cert-manager-operator` via OLM Subscription and configures Subscription status as ManifestWork feedback for post-apply verification. The add-on availability condition reflects ManifestWork application; it is not gated on OLM resolution. The OLM-only pattern (no agent Deployment, no custom Go code) minimizes maintenance burden and aligns with existing ACM add-on precedent (e.g., pipelines-operator). We recommend proceeding with implementation, scoped to four stories detailed in Section 10.
 
 ---
 
@@ -26,8 +26,7 @@ The proof-of-concept validates the following capabilities:
 | No agent Deployment required | Validated | Work-agent applies manifests; OLM handles operator lifecycle |
 | Placement-based cluster selection | Validated | Label selector (`cert-manager=enabled`) |
 | Progressive rollout | Validated | `installStrategy.type: Placements` with configurable concurrency |
-| Health gated on OLM resolution | Validated | `healthProbe` on Subscription `.status.state` = `AtLatestKnown` |
-| Feedback surfaced to hub | Validated | `feedbackRules` expose `installedCSV` and `state` |
+| Subscription status feedback surfaced to hub | Configured | `feedbackRules` expose `installedCSV` and `state` through ManifestWork status; verify end-to-end on a staging hub |
 | CI validation | Validated | GitHub Actions workflow with yamllint + kubectl dry-run |
 
 ### Closest Reference Add-on
@@ -60,8 +59,8 @@ This satisfies ACM-42773's acceptance criterion: "cert-manager deployable to all
 
 | Gap | Impact | Mitigation |
 |---|---|---|
-| No CSV-level health probe | Cannot gate AVAILABLE on CSV `Succeeded` phase directly (CSV is created by OLM, not in ManifestWork) | Subscription `AtLatestKnown` is a reliable proxy; CSV failure surfaces as Subscription regression |
-| No cert-level visibility | Add-on health reflects operator health, not individual certificate status | Addressed by Tier 1 (RFE-9770); not a blocker for Tier 2 |
+| OLM status does not gate add-on availability | `ManagedClusterAddOn` availability reflects ManifestWork application, not Subscription or CSV status | Verify Subscription state and CSV phase separately on each managed cluster; use ManifestWork feedback for diagnosis |
+| No cert-level visibility | ManifestWork and OLM status feedback do not report individual certificate status | Addressed by Tier 1 (RFE-9770); not a blocker for Tier 2 |
 
 ---
 
@@ -98,7 +97,7 @@ See [docs/issuer-guides.md](./issuer-guides.md) for guided Issuer configuration 
 
 ## 4. Investigation Area 3: Health and Observability
 
-### Current Health Architecture
+### Current Status and Feedback Architecture
 
 ```
 Managed Cluster                          Hub Cluster
@@ -111,7 +110,7 @@ Managed Cluster                          Hub Cluster
                                                       v
                                          +----------------------------------+
                                          | ManagedClusterAddOn              |
-                                         |   AVAILABLE = healthProbe result |
+                                         |   AVAILABLE = ManifestWork status|
                                          |   conditions[]                   |
                                          +----------------------------------+
                                                       |
@@ -125,17 +124,17 @@ Managed Cluster                          Hub Cluster
 
 ### What the ACM Console Shows Today
 
-The ACM console displays `ManagedClusterAddOn` conditions. With our `healthProbe` configuration:
+The ACM console displays `ManagedClusterAddOn` conditions. `AVAILABLE=True` indicates that the ManifestWork was applied; it does not establish that OLM resolved the Subscription or that the operator CSV succeeded.
 
-- **AVAILABLE=True**: Subscription resolved, operator installed (gated on `AtLatestKnown`)
-- **AVAILABLE=False / DEGRADED**: Subscription not resolved, OLM failure, or ManifestWork not applied
+- **AVAILABLE=True**: ManifestWork applied; verify Subscription and CSV status separately on the managed cluster
+- **AVAILABLE=False / DEGRADED**: ManifestWork or add-on deployment problem; inspect ManifestWork status and managed-cluster events
 - **Progressing**: Rollout in progress (progressive strategy)
 
-The `installedCSV` value is surfaced via feedbackRules and visible in ManifestWork status, but is not currently displayed in the console UI as a first-class field.
+The `state` and `installedCSV` values are surfaced via feedbackRules and visible in ManifestWork status, but are not currently displayed in the console UI as first-class fields.
 
 ### Gap: Certificate-Level Visibility
 
-The add-on health reflects whether the cert-manager **operator** is installed and running. It does not surface:
+The add-on availability condition reflects ManifestWork application, not whether the cert-manager **operator** is installed and running. Subscription feedback can aid OLM troubleshooting, but it does not surface:
 
 - Individual `Certificate` resource status (ready/expired/failing)
 - Issuer health (configured/erroring)
@@ -145,7 +144,7 @@ This is the domain of Tier 1 ([RFE-9770](https://redhat.atlassian.net/browse/RFE
 
 ### Tier 1 Dependency Assessment
 
-**Tier 2 can proceed independently of Tier 1.** The add-on delivers operator deployment and operator-level health. Certificate-level visibility is an orthogonal concern that layers on top. There is no technical dependency — Tier 2 does not consume or require any API or UI from Tier 1.
+**Tier 2 can proceed independently of Tier 1.** The add-on delivers operator deployment and exposes OLM status feedback for verification; its availability condition does not represent operator health. Certificate-level visibility is an orthogonal concern that layers on top. There is no technical dependency — Tier 2 does not consume or require any API or UI from Tier 1.
 
 ---
 
@@ -156,7 +155,7 @@ This is the domain of Tier 1 ([RFE-9770](https://redhat.atlassian.net/browse/RFE
 | Component | Owner | Rationale |
 |---|---|---|
 | `openshift-cert-manager-operator` | cert-manager operator team | Upstream operator, OLM packaging, catalog entry |
-| `stolostron/cert-manager-addon` | Server Foundation | Add-on wrapper (manifests, Placement, rollout strategy, health probes) |
+| `stolostron/cert-manager-addon` | Server Foundation | Add-on wrapper (manifests, Placement, rollout strategy, status feedback) |
 | ACM console integration | Console team (if UI changes needed) | Status display, future Tier 3 one-click experience |
 
 Server Foundation owns the add-on packaging and lifecycle, not the operator itself. This is consistent with how other OLM-based add-ons are structured — the add-on team does not fork or modify the upstream operator.
@@ -240,7 +239,7 @@ Story 4: Migration guide + pre-flight   <- can parallel with Story 2
 
 | # | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|---|
-| 1 | OLM Subscription failure on managed clusters (missing catalog, network issues) not visible to hub admin | Medium | High | healthProbe gates AVAILABLE on Subscription state; feedbackRules surface `installedCSV` for diagnosis; pre-flight checklist validates catalog availability |
+| 1 | OLM Subscription failure on managed clusters (missing catalog, network issues) is not reflected in add-on availability | Medium | High | feedbackRules surface Subscription state and `installedCSV` in ManifestWork status; pre-flight checklist validates catalog availability per target cluster and deployment guide documents direct Subscription/CSV checks |
 | 2 | Conflict with existing Policy-based cert-manager deployments | Medium | Medium | Pre-flight checklist checks for existing installations; migration guide documents transition path |
 | 3 | Global Hub topology not validated | Low | Medium | Scoped as a dedicated validation story; AddOnTemplate pattern is expected to propagate correctly |
 | 4 | CA credential distribution does not scale without framework support | Medium | Medium | Initial release uses manual post-install configuration; framework-assisted CA distribution is a follow-on story based on customer feedback |
@@ -282,12 +281,12 @@ Story 4: Migration guide + pre-flight   <- can parallel with Story 2
 
 **Title:** Validate cert-manager add-on deployment to ClusterSet with progressive rollout
 
-**Scope:** Test and document ClusterSet-scoped deployment. Validate progressive rollout across multiple clusters. Confirm healthProbe correctly gates AVAILABLE. Confirm operator installs and cert-manager pods run on all target clusters.
+**Scope:** Test and document ClusterSet-scoped deployment. Validate progressive rollout across multiple clusters. Confirm add-on availability reflects ManifestWork application and verify Subscription/CSV status separately on each target cluster. Confirm the operator installs and cert-manager pods run on all target clusters.
 
 **Acceptance Criteria:**
 - [ ] Placement configured with `clusterSets` field targets a specific ClusterSet
 - [ ] Progressive rollout (configurable concurrency) validated across 3+ clusters
-- [ ] ManagedClusterAddOn AVAILABLE=True only after Subscription resolved
+- [ ] ManifestWork feedback exposes Subscription `state` and `installedCSV`; separately verify Subscription resolution and CSV `Succeeded` on each target cluster
 - [ ] feedbackRules values visible in ManifestWork status
 - [ ] End-to-end test: Certificate resource created and issued on managed cluster
 - [ ] Results documented with test evidence
@@ -341,7 +340,7 @@ Story 4: Migration guide + pre-flight   <- can parallel with Story 2
 | ACM-42773 Acceptance Criterion | Status | Evidence / Gap |
 |---|---|---|
 | cert-manager deployable to all managed clusters or a ClusterSet in one step | **Met** | Placement supports both label-based and ClusterSet-scoped selection. Single `oc apply -k` deploys all manifests. Validated in PoC for label-based; ClusterSet requires end-to-end validation (Story 2). |
-| Add-on health and installation status surfaced in ACM console | **Partially met** | healthProbe gates AVAILABLE on Subscription resolution. feedbackRules surface installedCSV. ACM console displays ManagedClusterAddOn conditions. Gap: `installedCSV` not shown as first-class console field; cert-level visibility requires Tier 1. |
+| Add-on deployment and installation status surfaced in ACM console | **Partially met** | ACM console displays ManifestWork-based ManagedClusterAddOn conditions; feedbackRules expose Subscription state and `installedCSV` in ManifestWork status, but OLM status does not gate availability and these values are not first-class console fields. Cert-level visibility requires Tier 1. |
 | Guided documentation for common Issuer configurations | **Not yet met** | Scoped as Story 1. Three Issuer patterns identified (Let's Encrypt, internal CA, Vault). |
 | Policy-based deployment not required | **Met** | Add-on framework is the supported path. No Policy resources required. |
 

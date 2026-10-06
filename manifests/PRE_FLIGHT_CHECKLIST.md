@@ -44,14 +44,20 @@ Complete these validation steps **before** applying the cert-manager addon to yo
 
 ## 4. Operator Package Verification (OLM)
 
-- [ ] cert-manager operator package exists in catalog
+- [ ] cert-manager operator package and channel exist in the catalog of every target managed cluster
+
+  The Subscription is installed on managed clusters, so run these checks once per
+  target cluster using its actual kubeconfig context. Do not assume the
+  ManagedCluster name matches the context name.
+
   ```bash
-  oc get packagemanifest openshift-cert-manager-operator -n openshift-marketplace
+  oc --context=<managed-cluster-context> get packagemanifest openshift-cert-manager-operator -n openshift-marketplace
+  # Should find the openshift-cert-manager-operator package
   ```
 
 - [ ] Verify channel availability
   ```bash
-  oc get packagemanifest openshift-cert-manager-operator -n openshift-marketplace -o jsonpath='{.status.channels[*].name}'
+  oc --context=<managed-cluster-context> get packagemanifest openshift-cert-manager-operator -n openshift-marketplace -o jsonpath='{.status.channels[*].name}'
   # Should include 'stable-v1' (default channel)
   ```
 
